@@ -1,0 +1,22 @@
+# docker compose up -d --build
+# Settings come from .env next to this file: cp .env.example .env and fill it in.
+
+services:
+  bookstack-mcp:
+    build: .
+    image: bookstack-mcp
+    restart: unless-stopped
+    environment:
+      BOOKSTACK_URL: ${BOOKSTACK_URL:?set BOOKSTACK_URL in .env}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:?set MCP_PUBLIC_URL in .env}
+      MCP_AUTH_SECRET: ${MCP_AUTH_SECRET:?set MCP_AUTH_SECRET in .env (openssl rand -base64 32)}
+      MCP_ALLOWED_REDIRECT_HOSTS: ${MCP_ALLOWED_REDIRECT_HOSTS:-}
+      BOOKSTACK_READ_ONLY: ${BOOKSTACK_READ_ONLY:-false}
+      # BookStack with a certificate from a private CA: mount the CA below and uncomment.
+      # NODE_EXTRA_CA_CERTS: /certs/ca.pem
+    # volumes:
+    #   - ./ca.pem:/certs/ca.pem:ro
+    ports:
+      # Only reachable from this host, for a reverse proxy running here. Use "3000:3000" if the
+      # proxy is on another machine.
+      - "127.0.0.1:${HOST_PORT:-3000}:3000"

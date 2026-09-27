@@ -10,6 +10,9 @@
 весь API один в один (галереи изображений, пользователи и роли, десятки инструментов), здесь — только
 то, что нужно, чтобы читать и писать вики через диалог с Claude.
 
+Для себя сервер запускается локально через stdio. Для команды есть [HTTP-режим](#общий-сервер-http):
+один контейнер на сервере, подключение к Claude по URL, каждый входит со своим токеном BookStack.
+
 ## Установка
 
 **1. Получите API-токен в BookStack.** Аватар → *My Account* → *Access & Security* → *API Tokens* →
@@ -53,6 +56,81 @@ npm run setup
 Путь к `node` лучше указывать абсолютный: GUI-приложение может не видеть ваш `PATH` из shell.
 Перед этим выполните `npm run build`, чтобы появился `dist/index.js`.
 </details>
+
+## Общий сервер (HTTP)
+
+Вместо того чтобы каждый клонировал репозиторий, можно поднять один сервер на всю команду и подключать
+его в Claude по URL. Он работает за reverse proxy на **подпути** существующего домена
+(`https://tools.example.com/bookstack-mcp`) — новый домен и сертификат не нужны.
+
+- **Каждый входит со своим API-токеном BookStack** через стандартный OAuth: Claude открывает страницу
+  входа, вы вставляете Token ID и Secret — готово. У каждого остаются ровно его права в BookStack.
+- **Сервер ничего не хранит.** Токены, которые он выдаёт Claude, зашифрованы ключом `MCP_AUTH_SECRET`
+  и содержат внутри токен пользователя. Ни базы, ни сессий — можно спокойно перезапускать и масштабировать.
+- **Отозвать доступ** = удалить API-токен в BookStack (срабатывает в течение 5 минут).
+
+### Запуск
+
+```bash
+cp .env.example .env    # заполните BOOKSTACK_URL, MCP_PUBLIC_URL, MCP_AUTH_SECRET
+docker compose up -d --build
+```
+
+Без Docker: `npm install && npm run build`, задать переменные, `npm run serve`.
+
+| Переменная | |
+|---|---|
+| `BOOKSTACK_URL` | Адрес BookStack, например `https://wiki.example.com` |
+| `MCP_PUBLIC_URL` | Публичный адрес этого сервера **вместе с подпутём**, например `https://tools.example.com/bookstack-mcp`. MCP-эндпоинт — это адрес + `/mcp` |
+| `MCP_AUTH_SECRET` | Ключ шифрования токенов, выдаваемых Claude: `openssl rand -base64 32`. Держите в секрете; смена ключа разлогинивает всех |
+| `MCP_ALLOWED_REDIRECT_HOSTS` | Куда можно возвращаться после входа. По умолчанию `claude.ai,claude.com,localhost,127.0.0.1,[::1]` — для Claude достаточно; для других MCP-клиентов добавьте их хосты, `*` — любые |
+| `MCP_HOST`, `MCP_PORT` | Адрес прослушивания, по умолчанию `127.0.0.1:3000` (в Docker — `0.0.0.0`) |
+| `BOOKSTACK_READ_ONLY` | `true` — только инструменты чтения |
+
+`BOOKSTACK_TOKEN_ID` / `BOOKSTACK_TOKEN_SECRET` в этом режиме не используются.
+
+### Reverse proxy на подпути
+
+nginx, в блоке `server` существующего домена:
+
+```nginx
+location /bookstack-mcp/ {
+    proxy_pass http://127.0.0.1:3000;
+}
+
+# OAuth discovery сначала смотрит в корень домена (RFC 8414). Обязательно, если основной сайт отвечает
+# 200 на любые URL (SPA, catch-all) — иначе Claude не подключится; в остальных случаях не мешает.
+location = /.well-known/oauth-authorization-server/bookstack-mcp {
+    proxy_pass http://127.0.0.1:3000;
+}
+location = /.well-known/oauth-protected-resource/bookstack-mcp/mcp {
+    proxy_pass http://127.0.0.1:3000;
+}
+```
+
+Подпуть можно передавать как есть (как выше) или срезать (`proxy_pass http://127.0.0.1:3000/;`) — сервер
+понимает оба варианта. С любым другим прокси — аналогично. Для всего, кроме `localhost`, нужен HTTPS.
+
+### Подключение к Claude
+
+**Как коннектор** (десктопное приложение Claude, claude.ai — и чат, и Cowork, и вкладка Code):
+*Settings → Connectors → Add custom connector*, URL `https://tools.example.com/bookstack-mcp/mcp`, затем
+*Connect* и вход с токеном BookStack. На тарифах Team/Enterprise владелец добавляет его один раз на всю
+организацию. Кастомные коннекторы Claude подключает **из облака Anthropic**, поэтому сервер должен быть
+доступен из интернета, а не только из VPN.
+
+**В Claude Code** (CLI; вкладка Code в десктопе читает тот же конфиг) — подключение идёт с вашей машины,
+так что сервер может быть и внутренним:
+
+```bash
+claude mcp add --transport http --scope user bookstack https://tools.example.com/bookstack-mcp/mcp
+```
+
+Затем `/mcp` → `bookstack` → *Authenticate*. Или без OAuth, передав токен BookStack напрямую:
+
+```bash
+claude mcp add --transport http --scope user bookstack https://tools.example.com/bookstack-mcp/mcp --header "Authorization: Token TOKEN_ID:TOKEN_SECRET"
+```
 
 ## Как пользоваться
 
@@ -141,7 +219,6 @@ BookStack понимает callout-блоки: `<p class="callout info">Текс
 - Журнал аудита (audit log)
 - Экспорт в PDF / чистый HTML (экспорт в Markdown используется только внутри — для чтения WYSIWYG-страниц)
 - Работа с несколькими инстансами BookStack из одного процесса сервера
-- Любой транспорт, кроме stdio (нет HTTP/SSE-сервера, нет других способов авторизации, кроме API-токена)
 
 Если что-то из этого нужно — это довольно локальные доработки в `src/tools.ts` и `src/bookstack.ts`,
 issue или PR приветствуются.
@@ -158,6 +235,14 @@ issue или PR приветствуются.
 - **Перенесли папку проекта** — снова запустите `npm run setup`: путь к серверу хранится в конфиге.
 - **Лимит запросов** — по умолчанию в BookStack 180 запросов в минуту.
 
+HTTP-режим:
+
+- **Коннектор сразу падает / «Unexpected token '<'»** — корневые `.well-known` URL отдают HTML основного
+  сайта; добавьте два блока `location = /.well-known/…` из примера для nginx.
+- **«Redirects to … aren't allowed»** — хоста колбэка клиента нет в `MCP_ALLOWED_REDIRECT_HOSTS`.
+- **После перезапуска всем приходится переподключаться** — не задан `MCP_AUTH_SECRET`, используется случайный.
+- **Страница входа пишет, что токен отклонён** — те же причины, что у 401/403 выше, для токена этого пользователя.
+
 ## Разработка
 
 ```bash
@@ -166,5 +251,8 @@ npm run build
 
 - `src/bookstack.ts` — HTTP-клиент BookStack API и понятные сообщения об ошибках
 - `src/tools.ts` — инструменты и промпт `document`
-- `src/index.ts` — запуск MCP-сервера (stdio) и инструкции для модели
+- `src/server.ts` — MCP-сервер и инструкции для модели, общие для обоих транспортов
+- `src/index.ts` — запуск через stdio
+- `src/http.ts` — запуск по HTTP: Streamable HTTP, маршрутизация на подпути
+- `src/oauth.ts` — OAuth-вход по API-токену BookStack, stateless-шифрованные токены
 - `src/setup.ts` — мастер настройки
