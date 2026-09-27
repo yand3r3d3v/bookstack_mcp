@@ -34,7 +34,35 @@ This one does less on purpose:
 Secret* — the secret is shown once. The user's role needs the **Access System API** permission
 (admins have it by default).
 
-**2. Clone, install and run setup:**
+**2. Add the server** — either from the Docker image (nothing to clone or build) or from source.
+
+**Option A: Docker.** Add this to `~/.claude.json` under `mcpServers` (or to a project's own
+`.mcp.json` if you only want it there):
+
+```json
+"bookstack": {
+  "type": "stdio",
+  "command": "docker",
+  "args": [
+    "run", "-i", "--rm", "--no-healthcheck",
+    "-e", "BOOKSTACK_URL", "-e", "BOOKSTACK_TOKEN_ID", "-e", "BOOKSTACK_TOKEN_SECRET",
+    "ghcr.io/yand3r3d3v/bookstack_mcp:latest", "node", "dist/index.js"
+  ],
+  "env": {
+    "BOOKSTACK_URL": "https://wiki.example.com",
+    "BOOKSTACK_TOKEN_ID": "...",
+    "BOOKSTACK_TOKEN_SECRET": "..."
+  }
+}
+```
+
+This is the same image as the [shared server](#shared-server-http); `node dist/index.js` at the end
+switches it to stdio. The bare `-e NAME` flags pass the values from `env` into the container, so the
+secret doesn't end up in `args`. The image is multi-arch (amd64 / arm64); `:latest` follows `main`,
+release tags like `:0.1.0` are pinned. To update: `docker pull ghcr.io/yand3r3d3v/bookstack_mcp:latest`.
+If the desktop app can't find `docker`, use its absolute path (`which docker`).
+
+**Option B: from source.** Clone, install and run setup:
 
 ```bash
 git clone https://github.com/yand3r3d3v/bookstack_mcp.git
@@ -88,12 +116,19 @@ URL. It works behind a reverse proxy on a **sub-path** of an existing domain
 
 ### Run it
 
+The image is prebuilt on GHCR, so you only need two files, not the repo:
+
 ```bash
-cp .env.example .env    # fill in BOOKSTACK_URL, MCP_PUBLIC_URL, MCP_AUTH_SECRET
-docker compose up -d --build
+mkdir bookstack-mcp && cd bookstack-mcp
+curl -fsSLO https://raw.githubusercontent.com/yand3r3d3v/bookstack_mcp/main/compose.yaml
+curl -fsSL https://raw.githubusercontent.com/yand3r3d3v/bookstack_mcp/main/.env.example -o .env
+# fill in BOOKSTACK_URL, MCP_PUBLIC_URL, MCP_AUTH_SECRET in .env
+docker compose up -d
 ```
 
-Without Docker: `npm install && npm run build`, set the variables, `npm run serve`.
+To update: `docker compose pull && docker compose up -d`. From a checkout of the repo,
+`docker compose up -d --build` builds the image locally instead. Without Docker: `npm install &&
+npm run build`, set the variables, `npm run serve`.
 
 | Variable | |
 |---|---|
@@ -248,11 +283,16 @@ If you need any of these, they're reasonably contained additions to `src/tools.t
 
 Errors come back straight into the conversation, so Claude will show them. Common ones:
 
-- **"isn't configured"** — environment variables aren't set. Run `npm run setup`.
+- **"isn't configured"** — environment variables aren't set. Run `npm run setup` (Docker: check both
+  `env` and the `-e` flags in `args`).
 - **401** — wrong Token ID / Secret, or the token expired.
 - **403** — the role is missing *Access System API*, or lacks permission on that specific book/page.
 - **"redirects to https://…"** — use `https://` in the URL.
 - **Self-signed certificate** — add `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` to the server's `env`.
+  Docker: mount the file too — `"-v", "/path/to/ca.pem:/ca.pem:ro", "-e", "NODE_EXTRA_CA_CERTS=/ca.pem"`.
+- **Docker: BookStack on `localhost`** — inside the container `localhost` is the container itself; use
+  `http://host.docker.internal:PORT` instead (on Linux also add
+  `"--add-host=host.docker.internal:host-gateway"` to `args`).
 - **Moved the project folder** — run `npm run setup` again; the server's path is stored in the config.
 - **Rate limited** — BookStack defaults to 180 requests/minute.
 
