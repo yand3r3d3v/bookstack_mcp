@@ -23,7 +23,9 @@ This one does less on purpose:
   against your instance, and registers the server in Claude Code's config itself.
 - **Errors you can act on.** A bad token, a wrong URL, a permission gap, a rate limit — each comes
   back as a plain-English message with what to do about it, not a raw HTTP status.
-- **No new infra.** stdio only, no server to host, no database, no Docker.
+- **No new infra.** For yourself it runs over stdio: no server, no database, no Docker. For a team there's
+  an [optional HTTP mode](#shared-server-http) — one container, still no database, and everyone signs in
+  with their own BookStack token.
 
 ## Install
 
@@ -70,6 +72,83 @@ it there):
 Use an absolute path to `node` — the GUI app doesn't always inherit your shell's `PATH`. Run
 `npm run build` first so `dist/index.js` exists.
 </details>
+
+## Shared server (HTTP)
+
+Instead of everyone cloning the repo, you can run one server for the whole team and add it to Claude by
+URL. It works behind a reverse proxy on a **sub-path** of an existing domain
+(`https://tools.example.com/bookstack-mcp`), so no new domain or certificate is needed.
+
+- **Each person signs in with their own BookStack API token** through a standard OAuth flow: Claude opens
+  a sign-in page, you paste your Token ID and Secret, done. Everyone keeps exactly their own BookStack
+  permissions.
+- **The server stores nothing.** The tokens it hands to Claude are encrypted with `MCP_AUTH_SECRET` and
+  carry the user's BookStack token inside. No database, no sessions — restart or scale it freely.
+- **Revoking access** = deleting the API token in BookStack (takes effect within 5 minutes).
+
+### Run it
+
+```bash
+cp .env.example .env    # fill in BOOKSTACK_URL, MCP_PUBLIC_URL, MCP_AUTH_SECRET
+docker compose up -d --build
+```
+
+Without Docker: `npm install && npm run build`, set the variables, `npm run serve`.
+
+| Variable | |
+|---|---|
+| `BOOKSTACK_URL` | Your BookStack, e.g. `https://wiki.example.com` |
+| `MCP_PUBLIC_URL` | This server's public address **including the sub-path**, e.g. `https://tools.example.com/bookstack-mcp`. The MCP endpoint is this + `/mcp` |
+| `MCP_AUTH_SECRET` | Encrypts the tokens given to Claude: `openssl rand -base64 32`. Keep it secret; changing it signs everyone out |
+| `MCP_ALLOWED_REDIRECT_HOSTS` | Where sign-in may redirect back to. Default `claude.ai,claude.com,localhost,127.0.0.1,[::1]` — enough for Claude; add hosts for other MCP clients, `*` allows any |
+| `MCP_HOST`, `MCP_PORT` | Listen address, default `127.0.0.1:3000` (`0.0.0.0` in Docker) |
+| `BOOKSTACK_READ_ONLY` | `true` — read tools only |
+
+`BOOKSTACK_TOKEN_ID` / `BOOKSTACK_TOKEN_SECRET` aren't used in this mode.
+
+### Reverse proxy on a sub-path
+
+nginx, in the `server` block of the existing domain:
+
+```nginx
+location /bookstack-mcp/ {
+    proxy_pass http://127.0.0.1:3000;
+}
+
+# OAuth discovery checks the root of the domain first (RFC 8414). Required if the main site answers
+# unknown URLs with 200 (an SPA, a catch-all) — otherwise Claude fails to connect; harmless either way.
+location = /.well-known/oauth-authorization-server/bookstack-mcp {
+    proxy_pass http://127.0.0.1:3000;
+}
+location = /.well-known/oauth-protected-resource/bookstack-mcp/mcp {
+    proxy_pass http://127.0.0.1:3000;
+}
+```
+
+The sub-path may be passed through as-is (as above) or stripped (`proxy_pass http://127.0.0.1:3000/;`);
+the server accepts both. Any other proxy works the same way. HTTPS is required for anything but
+`localhost`.
+
+### Connect Claude
+
+**As a connector** (Claude desktop app, claude.ai — Chat, Cowork and the Code tab alike): *Settings →
+Connectors → Add custom connector*, URL `https://tools.example.com/bookstack-mcp/mcp`, then *Connect* and
+sign in with your BookStack token. On Team/Enterprise plans an owner adds it once for the organization.
+Claude reaches custom connectors **from Anthropic's cloud**, so the server has to be reachable from the
+internet, not just from your VPN.
+
+**In Claude Code** (CLI; the desktop Code tab reads the same config) — the connection is made from your
+machine, so an internal-only server is fine:
+
+```bash
+claude mcp add --transport http --scope user bookstack https://tools.example.com/bookstack-mcp/mcp
+```
+
+Then run `/mcp`, pick `bookstack` → *Authenticate*. Or skip OAuth and pass the BookStack token directly:
+
+```bash
+claude mcp add --transport http --scope user bookstack https://tools.example.com/bookstack-mcp/mcp --header "Authorization: Token TOKEN_ID:TOKEN_SECRET"
+```
 
 ## Usage
 
@@ -161,7 +240,6 @@ books/chapters, adding/removing books on a shelf, and soft-delete to the recycle
 - Audit log
 - Exporting to PDF / plain HTML (Markdown export is used internally for reading WYSIWYG pages)
 - Talking to more than one BookStack instance from a single server process
-- Any transport besides stdio (no HTTP/SSE server, no auth flow beyond the API token)
 
 If you need any of these, they're reasonably contained additions to `src/tools.ts` and
 `src/bookstack.ts` — issues and PRs welcome. See [Development](#development) below.
@@ -178,6 +256,14 @@ Errors come back straight into the conversation, so Claude will show them. Commo
 - **Moved the project folder** — run `npm run setup` again; the server's path is stored in the config.
 - **Rate limited** — BookStack defaults to 180 requests/minute.
 
+HTTP mode:
+
+- **Connector fails right away / "Unexpected token '<'"** — the root `.well-known` URLs return the main
+  site's HTML; add the two `location = /.well-known/…` blocks from the nginx example.
+- **"Redirects to … aren't allowed"** — the client's callback host isn't in `MCP_ALLOWED_REDIRECT_HOSTS`.
+- **Everyone has to reconnect after a restart** — `MCP_AUTH_SECRET` isn't set, so a random one is used.
+- **Sign-in page says the token was refused** — same causes as 401/403 above, for that user's token.
+
 ## Development
 
 ```bash
@@ -186,7 +272,10 @@ npm run build
 
 - [`src/bookstack.ts`](src/bookstack.ts) — HTTP client for the BookStack API and human-readable errors
 - [`src/tools.ts`](src/tools.ts) — the MCP tools and the `document` prompt
-- [`src/index.ts`](src/index.ts) — starts the MCP server (stdio) and sets the model instructions
+- [`src/server.ts`](src/server.ts) — the MCP server and the model instructions, shared by both transports
+- [`src/index.ts`](src/index.ts) — stdio entry point
+- [`src/http.ts`](src/http.ts) — HTTP entry point: Streamable HTTP, routing under a sub-path
+- [`src/oauth.ts`](src/oauth.ts) — OAuth sign-in with a BookStack API token, stateless encrypted tokens
 - [`src/setup.ts`](src/setup.ts) — the setup wizard
 
 ## License

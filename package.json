@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc",
     "setup": "node dist/setup.js",
+    "serve": "node dist/http.js",
     "prepare": "tsc"
   },
   "engines": {

@@ -76,7 +76,12 @@ export interface ListResponse<T> {
   total: number;
 }
 
-export class BookStackError extends Error {}
+export class BookStackError extends Error {
+  /** HTTP status from BookStack; undefined when BookStack wasn't reached or didn't answer as its API. */
+  constructor(message: string, readonly status?: number) {
+    super(message);
+  }
+}
 
 type Query = Record<string, string | number | undefined>;
 
@@ -186,7 +191,7 @@ async function toError(res: Response): Promise<BookStackError> {
     // Malformed JSON — keep the raw snippet.
   }
   const hint = STATUS_HINTS[res.status];
-  return new BookStackError(`BookStack ${res.status}: ${message}${details}${hint ? `\n${hint}` : ""}`);
+  return new BookStackError(`BookStack ${res.status}: ${message}${details}${hint ? `\n${hint}` : ""}`, res.status);
 }
 
 function describeFetchError(err: unknown): string {
