@@ -19,7 +19,37 @@
 *Create Token* (в старых версиях: *Edit Profile* → *API Tokens*). Сохраните *Token ID* и *Token Secret* —
 секрет показывается один раз. Роли пользователя нужно право **Access System API** (у админов оно есть).
 
-**2. Склонируйте, установите и запустите настройку:**
+**2. Подключите сервер** — из готового Docker-образа (ничего клонировать и собирать не нужно) или из
+исходников.
+
+**Вариант А: Docker.** Добавьте в `~/.claude.json` в раздел `mcpServers` (или в `.mcp.json` в корне
+проекта, если сервер нужен только в нём):
+
+```json
+"bookstack": {
+  "type": "stdio",
+  "command": "docker",
+  "args": [
+    "run", "-i", "--rm", "--no-healthcheck",
+    "-e", "BOOKSTACK_URL", "-e", "BOOKSTACK_TOKEN_ID", "-e", "BOOKSTACK_TOKEN_SECRET",
+    "ghcr.io/yand3r3d3v/bookstack_mcp:latest", "node", "dist/index.js"
+  ],
+  "env": {
+    "BOOKSTACK_URL": "https://wiki.example.com",
+    "BOOKSTACK_TOKEN_ID": "...",
+    "BOOKSTACK_TOKEN_SECRET": "..."
+  }
+}
+```
+
+Это тот же образ, что и для [общего сервера](#общий-сервер-http); `node dist/index.js` в конце
+переключает его на stdio. Флаги `-e ИМЯ` без значения пробрасывают переменные из `env` в контейнер, так
+что секрет не попадает в `args`. Образ мультиархитектурный (amd64 / arm64); `:latest` собирается из
+`main`, теги релизов вроде `:0.1.0` фиксированы. Обновиться:
+`docker pull ghcr.io/yand3r3d3v/bookstack_mcp:latest`. Если десктопное приложение не находит `docker`,
+укажите абсолютный путь (`which docker`).
+
+**Вариант Б: из исходников.** Склонируйте, установите и запустите настройку:
 
 ```bash
 git clone https://github.com/yand3r3d3v/bookstack_mcp.git
@@ -71,12 +101,19 @@ npm run setup
 
 ### Запуск
 
+Образ уже собран и лежит в GHCR, так что нужен не репозиторий, а два файла:
+
 ```bash
-cp .env.example .env    # заполните BOOKSTACK_URL, MCP_PUBLIC_URL, MCP_AUTH_SECRET
-docker compose up -d --build
+mkdir bookstack-mcp && cd bookstack-mcp
+curl -fsSLO https://raw.githubusercontent.com/yand3r3d3v/bookstack_mcp/main/compose.yaml
+curl -fsSL https://raw.githubusercontent.com/yand3r3d3v/bookstack_mcp/main/.env.example -o .env
+# заполните в .env BOOKSTACK_URL, MCP_PUBLIC_URL, MCP_AUTH_SECRET
+docker compose up -d
 ```
 
-Без Docker: `npm install && npm run build`, задать переменные, `npm run serve`.
+Обновиться: `docker compose pull && docker compose up -d`. Из клона репозитория
+`docker compose up -d --build` соберёт образ локально. Без Docker: `npm install && npm run build`,
+задать переменные, `npm run serve`.
 
 | Переменная | |
 |---|---|
@@ -227,11 +264,15 @@ issue или PR приветствуются.
 
 Ошибки сервер возвращает прямо в диалог, Claude их покажет. Частые случаи:
 
-- **«isn't configured»** — не заданы переменные окружения. Запустите `npm run setup`.
+- **«isn't configured»** — не заданы переменные окружения. Запустите `npm run setup` (Docker: проверьте
+  и `env`, и флаги `-e` в `args`).
 - **401** — неверный Token ID / Secret или токен истёк.
 - **403** — у роли нет права *Access System API* или прав на конкретную книгу/страницу.
 - **«redirects to https://…»** — укажите в URL `https://`.
 - **Самоподписанный сертификат** — добавьте в `env` сервера `NODE_EXTRA_CA_CERTS=/путь/к/ca.pem`.
+  В Docker файл нужно ещё и смонтировать: `"-v", "/путь/к/ca.pem:/ca.pem:ro", "-e", "NODE_EXTRA_CA_CERTS=/ca.pem"`.
+- **Docker: BookStack на `localhost`** — внутри контейнера `localhost` — это сам контейнер; используйте
+  `http://host.docker.internal:ПОРТ` (на Linux ещё добавьте в `args` `"--add-host=host.docker.internal:host-gateway"`).
 - **Перенесли папку проекта** — снова запустите `npm run setup`: путь к серверу хранится в конфиге.
 - **Лимит запросов** — по умолчанию в BookStack 180 запросов в минуту.
 

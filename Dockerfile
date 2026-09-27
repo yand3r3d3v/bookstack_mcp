@@ -1,7 +1,9 @@
 # HTTP mode of bookstack-mcp: one shared server that people add to Claude as a connector.
 # Configuration is via environment variables — see .env.example and the README.
 
-FROM node:24-alpine AS build
+# The build stage runs on the builder's own platform: dist/ is plain JS, the same for every arch,
+# so multi-arch builds only emulate the small `npm ci` below instead of the TypeScript compile.
+FROM --platform=$BUILDPLATFORM node:24-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci --ignore-scripts

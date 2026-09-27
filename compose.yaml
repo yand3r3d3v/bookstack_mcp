@@ -1,10 +1,11 @@
-# docker compose up -d --build
+# docker compose up -d          — pulls the prebuilt image from GHCR
+# docker compose up -d --build  — builds it from this checkout instead
 # Settings come from .env next to this file: cp .env.example .env and fill it in.
 
 services:
   bookstack-mcp:
     build: .
-    image: bookstack-mcp
+    image: ghcr.io/yand3r3d3v/bookstack_mcp:latest
     restart: unless-stopped
     environment:
       BOOKSTACK_URL: ${BOOKSTACK_URL:?set BOOKSTACK_URL in .env}
