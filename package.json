@@ -1,16 +1,22 @@
 {
-  "name": "bookstack-mcp",
-  "version": "0.1.0",
+  "name": "@yand3r3d3v/bookstack-mcp",
+  "version": "0.2.0",
   "description": "MCP server for BookStack, built for Claude Code: search, read and write your wiki in Markdown from a chat.",
   "type": "module",
   "bin": {
-    "bookstack-mcp": "dist/index.js"
+    "bookstack-mcp": "dist/index.js",
+    "bookstack-mcp-setup": "dist/setup.js",
+    "bookstack-mcp-http": "dist/http.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsc",
+    "test": "tsc && tsc -p test && node --test \"test/*.test.ts\"",
     "setup": "node dist/setup.js",
     "serve": "node dist/http.js",
     "prepare": "tsc"

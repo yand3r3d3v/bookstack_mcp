@@ -14,6 +14,7 @@ import {
   type SearchResult,
   type Shelf,
 } from "./bookstack.js";
+import { excerpt, type ExcerptOptions } from "./excerpt.js";
 import { day, flags, htmlToText, lf, normalizeType, oneLine, ref, tagsText } from "./format.js";
 
 type GetClient = () => BookStackClient;
@@ -128,16 +129,23 @@ export function registerReadTools(server: McpServer, client: GetClient): void {
     {
       title: "Get BookStack item",
       description:
-        "Open one item by id. page → full content as Markdown plus its location. book → table of contents " +
-        "(chapters and pages). chapter → its pages. shelf → its books.",
-      inputSchema: { type: itemType, id },
+        "Open one item by id. page → content as Markdown plus its location. book → table of contents " +
+        "(chapters and pages). chapter → its pages. shelf → its books. A page longer than max_chars is cut off " +
+        "with its outline, to continue by offset or read one section.",
+      inputSchema: {
+        type: itemType,
+        id,
+        section: z.string().optional().describe("Pages only: return just the part under this heading"),
+        offset: z.number().int().min(0).default(0).describe("Pages only: skip this many characters, to continue a long page"),
+        max_chars: z.number().int().min(1000).max(200_000).default(30_000).describe("Pages only: the most content to return"),
+      },
       annotations: { readOnlyHint: true },
     },
-    run(async ({ type, id }) => {
+    run(async ({ type, id, section, offset, max_chars }) => {
       const bs = client();
       switch (type) {
         case "page":
-          return describePage(bs, await bs.get<Page>(`pages/${id}`), { withContent: true });
+          return describePage(bs, await bs.get<Page>(`pages/${id}`), { section, offset, maxChars: max_chars });
         case "book": {
           const book = await bs.get<Book>(`books/${id}`);
           const lines = header(bs, "book", book);
@@ -214,8 +222,9 @@ export function registerWriteTools(server: McpServer, client: GetClient): void {
       title: "Update page",
       description:
         "Replace a page's content, add to its end/start (mode), rename it, retag it or move it. " +
-        "For a small change inside an existing page prefer edit_page. WYSIWYG pages stay WYSIWYG " +
-        "(the Markdown is converted to HTML).",
+        "For a small change inside an existing page prefer edit_page. When replacing content, pass " +
+        "expected_revision so a change saved since you read the page isn't overwritten. WYSIWYG pages stay " +
+        "WYSIWYG (the Markdown is converted to HTML).",
       inputSchema: {
         id,
         markdown: z.string().optional().describe("New content, applied according to mode"),
@@ -223,20 +232,35 @@ export function registerWriteTools(server: McpServer, client: GetClient): void {
           .enum(["replace", "append", "prepend"])
           .default("replace")
           .describe("replace = markdown becomes the whole body; append/prepend = add it to the end/start"),
+        expected_revision: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("The `revisions` number get showed for the page. The update is refused if the page has been saved since."),
         name: z.string().min(1).max(255).optional().describe("New page name"),
         tags: tags.optional(),
         move_to_chapter_id: id.optional().describe("Move the page into this chapter"),
         move_to_book_id: id.optional().describe("Move the page to the top level of this book"),
       },
     },
-    run(async ({ id, markdown, mode, name, tags, move_to_chapter_id, move_to_book_id }) => {
+    run(async ({ id, markdown, mode, expected_revision, name, tags, move_to_chapter_id, move_to_book_id }) => {
       if (move_to_chapter_id && move_to_book_id) {
         throw new Error("Pass either move_to_chapter_id or move_to_book_id, not both.");
       }
       const bs = client();
       const body: Record<string, unknown> = { name, tags, chapter_id: move_to_chapter_id, book_id: move_to_book_id };
-      if (markdown !== undefined) {
-        const current = await bs.get<Page>(`pages/${id}`);
+      const current =
+        markdown !== undefined || expected_revision !== undefined ? await bs.get<Page>(`pages/${id}`) : undefined;
+      if (current && expected_revision !== undefined && (current.revision_count ?? expected_revision) !== expected_revision) {
+        const updatedBy = typeof current.updated_by === "object" ? ` by ${current.updated_by.name}` : "";
+        throw new Error(
+          `${ref("page", current)} has been saved since you read it: it's at revision ${current.revision_count} ` +
+            `(updated ${day(current.updated_at)}${updatedBy}), not ${expected_revision}. Nothing was changed. ` +
+            `Read it again with get and redo the change on the current content.`,
+        );
+      }
+      if (current && markdown !== undefined) {
         if (isMarkdownPage(current)) {
           body.markdown = combine(lf(current.markdown ?? ""), markdown, mode);
         } else {
@@ -506,11 +530,12 @@ function header(bs: BookStackClient, type: ItemType, item: Item): string[] {
   return lines;
 }
 
-async function describePage(bs: BookStackClient, page: Page, opts: { withContent?: boolean } = {}): Promise<string> {
-  const [book, chapter, content] = await Promise.all([
+/** With `content` options the page body is included, cut down to what they ask for. */
+async function describePage(bs: BookStackClient, page: Page, content?: ExcerptOptions): Promise<string> {
+  const [book, chapter, markdown] = await Promise.all([
     findOne(bs, "book", page.book_id),
     page.chapter_id ? findOne(bs, "chapter", page.chapter_id) : undefined,
-    opts.withContent ? pageMarkdown(bs, page) : undefined,
+    content ? pageMarkdown(bs, page) : undefined,
   ]);
   const location = [book ? ref("book", book) : `book:${page.book_id}`, chapter && ref("chapter", chapter)]
     .filter(Boolean)
@@ -525,9 +550,9 @@ async function describePage(bs: BookStackClient, page: Page, opts: { withContent
     `Editor: ${editor} · updated ${day(page.updated_at)}${updatedBy} · revisions: ${page.revision_count ?? "?"}`,
   ];
   if (page.tags?.length) lines.push(`Tags: ${tagsText(page.tags)}`);
-  if (content !== undefined) {
+  if (content && markdown !== undefined) {
     if (editor === "WYSIWYG") lines.push("(WYSIWYG page: content converted to Markdown for reading; edit it with update_page)");
-    lines.push("---", content.trim() || "(empty page)");
+    lines.push("---", excerpt(markdown.trim(), content) || "(empty page)");
   }
   return lines.join("\n");
 }

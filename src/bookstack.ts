@@ -86,11 +86,16 @@ export class BookStackError extends Error {
 type Query = Record<string, string | number | undefined>;
 
 const STATUS_HINTS: Record<number, string> = {
-  401: "Check BOOKSTACK_TOKEN_ID and BOOKSTACK_TOKEN_SECRET (and that the token hasn't expired).",
+  401: "Check the API token's Token ID and Token Secret (and that the token hasn't expired).",
   403: 'The token owner lacks permission for this. Their role needs "Access System API" plus the relevant content permissions.',
   404: "It doesn't exist, or the token owner can't see it.",
-  429: "BookStack API rate limit hit (default 180 requests/minute). Wait a moment and retry.",
+  429: "BookStack API rate limit hit (default 180 requests/minute).",
 };
+
+// A rate-limited request is retried after the wait BookStack asks for, as long as the waits add up
+// to no more than this; beyond that the tool call would outlast the client's patience.
+const RATE_LIMIT_RETRIES = 2;
+const RATE_LIMIT_WAIT_BUDGET = 30;
 
 export class BookStackClient {
   readonly baseUrl: string;
@@ -140,22 +145,31 @@ export class BookStackClient {
     }
 
     let res: Response;
-    try {
-      res = await fetch(url, {
-        method,
-        // A redirect would drop the Authorization header (or turn a POST into a GET),
-        // so surface it as a config problem instead of following it.
-        redirect: "manual",
-        headers: {
-          Authorization: this.auth,
-          Accept: "application/json",
-          ...(body ? { "Content-Type": "application/json" } : {}),
-        },
-        body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(30_000),
-      });
-    } catch (err) {
-      throw new BookStackError(`Can't reach BookStack at ${this.baseUrl}: ${describeFetchError(err)}`);
+    let waited = 0;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await fetch(url, {
+          method,
+          // A redirect would drop the Authorization header (or turn a POST into a GET),
+          // so surface it as a config problem instead of following it.
+          redirect: "manual",
+          headers: {
+            Authorization: this.auth,
+            Accept: "application/json",
+            ...(body ? { "Content-Type": "application/json" } : {}),
+          },
+          body: body ? JSON.stringify(body) : undefined,
+          signal: AbortSignal.timeout(30_000),
+        });
+      } catch (err) {
+        throw new BookStackError(`Can't reach BookStack at ${this.baseUrl}: ${describeFetchError(err)}`);
+      }
+
+      const wait = retryAfter(res);
+      if (res.status !== 429 || attempt >= RATE_LIMIT_RETRIES || waited + wait > RATE_LIMIT_WAIT_BUDGET) break;
+      waited += wait;
+      await res.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, wait * 1000));
     }
 
     if (res.status >= 300 && res.status < 400) {
@@ -190,8 +204,15 @@ async function toError(res: Response): Promise<BookStackError> {
   } catch {
     // Malformed JSON — keep the raw snippet.
   }
-  const hint = STATUS_HINTS[res.status];
+  let hint = STATUS_HINTS[res.status];
+  if (res.status === 429) hint += ` Retry in ${retryAfter(res)}s.`;
   return new BookStackError(`BookStack ${res.status}: ${message}${details}${hint ? `\n${hint}` : ""}`, res.status);
+}
+
+/** Seconds BookStack asks to wait before retrying a rate-limited request. */
+function retryAfter(res: Response): number {
+  const seconds = Number(res.headers.get("retry-after") ?? NaN);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : 2;
 }
 
 function describeFetchError(err: unknown): string {

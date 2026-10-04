@@ -11,7 +11,8 @@ export const readOnly = /^(1|true|yes|on)$/i.test(process.env.BOOKSTACK_READ_ONL
 
 const READ_INSTRUCTIONS = `BookStack wiki. Hierarchy: shelf → book → chapter → page. Pages can also sit directly in a book; chapters can't nest.
 Items are shown as [type:id] — pass those ids back to the tools.
-To find things: search (full text, tags) or list; get a book for its table of contents; get a page to read it as Markdown.`;
+To find things: search (full text, tags) or list; get a book for its table of contents; get a page to read it as Markdown.
+Long pages come back cut off, with their outline: read on with offset, or ask for one section.`;
 
 const WRITE_INSTRUCTIONS = `
 
@@ -20,6 +21,7 @@ Writing:
 - BookStack shows the page name as its title, so don't start the body with it as a # heading; use ## and below.
 - Before creating a page, check (search / get book) whether one on the topic exists and update it instead of creating a near-duplicate.
 - For small changes use edit_page instead of resending the whole page.
+- When replacing a page's content with update_page, pass expected_revision (the "revisions" number get showed), so an edit someone made in the meantime isn't overwritten.
 - If it's unclear where something belongs, suggest a location and ask the user.
 - Never put secrets (passwords, tokens, keys) into pages.
 - After writing, give the user the page URL.`;

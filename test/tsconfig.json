@@ -1,0 +1,10 @@
+{
+  // Type-checks the tests only; Node runs them as they are (it strips the types itself).
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["."]
+}

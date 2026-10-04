@@ -34,9 +34,19 @@ This one does less on purpose:
 Secret* — the secret is shown once. The user's role needs the **Access System API** permission
 (admins have it by default).
 
-**2. Add the server** — either from the Docker image (nothing to clone or build) or from source.
+**2. Add the server** — with npx, from the Docker image (neither needs a clone or a build), or from
+source.
 
-**Option A: Docker.** Add this to `~/.claude.json` under `mcpServers` (or to a project's own
+**Option A: npx.** With Node 20 or newer installed:
+
+```bash
+npx -y -p @yand3r3d3v/bookstack-mcp bookstack-mcp-setup
+```
+
+This is the setup wizard described under Option C. It registers the server as
+`npx -y @yand3r3d3v/bookstack-mcp`, so each new session runs the latest release.
+
+**Option B: Docker.** Add this to `~/.claude.json` under `mcpServers` (or to a project's own
 `.mcp.json` if you only want it there):
 
 ```json
@@ -62,7 +72,7 @@ secret doesn't end up in `args`. The image is multi-arch (amd64 / arm64); `:late
 release tags like `:0.1.0` are pinned. To update: `docker pull ghcr.io/yand3r3d3v/bookstack_mcp:latest`.
 If the desktop app can't find `docker`, use its absolute path (`which docker`).
 
-**Option B: from source.** Clone, install and run setup:
+**Option C: from source.** Clone, install and run setup:
 
 ```bash
 git clone https://github.com/yand3r3d3v/bookstack_mcp.git
@@ -219,9 +229,9 @@ Write tools will still ask for confirmation.
 |---|---|
 | `search` | Full-text search, with BookStack's own syntax: `"exact phrase"`, `[tag=value]`, `{in_name:...}` |
 | `list` | List shelves / books / chapters / pages; filter by name or book, sort by last updated |
-| `get` | Page → its content as Markdown; book → table of contents; chapter → its pages; shelf → its books |
+| `get` | Page → its content as Markdown; book → table of contents; chapter → its pages; shelf → its books. Long pages are cut at `max_chars` with their outline — read on by `offset` or one `section` at a time |
 | `create_page` | New page from Markdown, in a chapter or directly in a book |
-| `update_page` | Replace content, append/prepend (`mode`), rename, retag, move |
+| `update_page` | Replace content, append/prepend (`mode`), rename, retag, move. `expected_revision` refuses the update if the page was saved since it was read |
 | `edit_page` | Exact find-and-replace on a page's Markdown source — no need to resend the whole page |
 | `create_book` | New book (optionally placed on a shelf) |
 | `create_chapter` | New chapter in a book |
@@ -294,7 +304,8 @@ Errors come back straight into the conversation, so Claude will show them. Commo
   `http://host.docker.internal:PORT` instead (on Linux also add
   `"--add-host=host.docker.internal:host-gateway"` to `args`).
 - **Moved the project folder** — run `npm run setup` again; the server's path is stored in the config.
-- **Rate limited** — BookStack defaults to 180 requests/minute.
+- **Rate limited** — BookStack defaults to 180 requests/minute. The server waits and retries on its
+  own when the wait is short (up to 30 seconds in total); past that it reports the error.
 
 HTTP mode:
 
@@ -308,15 +319,26 @@ HTTP mode:
 
 ```bash
 npm run build
+npm test
 ```
+
+The tests need Node 22.18+ (they are TypeScript that Node runs directly). They need no BookStack:
+[`test/fake-bookstack.ts`](test/fake-bookstack.ts) stands in for its API.
 
 - [`src/bookstack.ts`](src/bookstack.ts) — HTTP client for the BookStack API and human-readable errors
 - [`src/tools.ts`](src/tools.ts) — the MCP tools and the `document` prompt
+- [`src/excerpt.ts`](src/excerpt.ts) — reading long pages in parts: by section or by offset
 - [`src/server.ts`](src/server.ts) — the MCP server and the model instructions, shared by both transports
 - [`src/index.ts`](src/index.ts) — stdio entry point
 - [`src/http.ts`](src/http.ts) — HTTP entry point: Streamable HTTP, routing under a sub-path
 - [`src/oauth.ts`](src/oauth.ts) — OAuth sign-in with a BookStack API token, stateless encrypted tokens
 - [`src/setup.ts`](src/setup.ts) — the setup wizard
+
+**Releasing.** `npm version minor` (or `patch` / `major`) bumps `package.json` and creates the tag;
+`git push --follow-tags` then publishes it: CI runs the tests, publishes the package to npm, creates a
+GitHub release with generated notes, and builds the Docker image tagged with the version. Publishing
+to npm uses [trusted publishing](https://docs.npmjs.com/trusted-publishers): the package's settings on
+npmjs.com name this repository and `release.yml` as its publisher, so there's no token to keep.
 
 ## License
 
