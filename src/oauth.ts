@@ -49,7 +49,8 @@ interface Grant {
 
 const CODE_TTL = 5 * 60;
 const ACCESS_TTL = 60 * 60;
-// Refresh tokens rotate on every use, so an active user never has to sign in again.
+// Every refresh hands out a new refresh token, so an active user never has to sign in again.
+// Nothing is stored, so the previous one isn't revoked: it stays valid until it expires.
 const REFRESH_TTL = 90 * 24 * 60 * 60;
 const VERIFIED_TTL = 5 * 60 * 1000;
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);

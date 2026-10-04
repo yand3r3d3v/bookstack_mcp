@@ -5,7 +5,8 @@
 
 import { accessSync, constants, copyFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { createRequire } from "node:module";
+import { delimiter, join, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { BookStackClient, type Item, type ListResponse } from "./bookstack.js";
@@ -63,10 +64,16 @@ try {
   process.exit(1);
 }
 
+// Run through npx, this file sits in npx's cache, which can be cleaned out at any time: register
+// the server as an npx command too, rather than as a path into the cache.
+const serverPath = fileURLToPath(new URL("./index.js", import.meta.url));
+const viaNpx = serverPath.includes(`${sep}_npx${sep}`);
+const { name: packageName } = createRequire(import.meta.url)("../package.json") as { name: string };
+
 const entry: ServerEntry = {
   type: "stdio",
-  command: stableNodePath(),
-  args: [fileURLToPath(new URL("./index.js", import.meta.url))],
+  command: stablePath(viaNpx ? "npx" : "node"),
+  args: viaNpx ? ["-y", packageName] : [serverPath],
   env: {
     BOOKSTACK_URL: bookstack.baseUrl,
     BOOKSTACK_TOKEN_ID: tokenId,
@@ -89,12 +96,13 @@ Start a new Claude Code session (in the desktop app: a new session in the Code t
 the BookStack tools show up as mcp__bookstack__*. Check with /mcp if they don't.`);
 
 /**
- * The `node` found on PATH (e.g. /opt/homebrew/bin/node) rather than process.execPath, which on
- * Homebrew resolves to a versioned Cellar path that disappears after `brew upgrade node`.
+ * The absolute path of `node` / `npx` as found on PATH (e.g. /opt/homebrew/bin/node): absolute because
+ * the desktop app doesn't always inherit the shell's PATH, and from PATH rather than process.execPath,
+ * which on Homebrew resolves to a versioned Cellar path that disappears after `brew upgrade node`.
  */
-function stableNodePath(): string {
+function stablePath(command: "node" | "npx"): string {
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    const candidate = join(dir, "node");
+    const candidate = join(dir, command);
     try {
       accessSync(candidate, constants.X_OK);
       return candidate;
@@ -102,5 +110,5 @@ function stableNodePath(): string {
       // not here
     }
   }
-  return process.execPath;
+  return command === "node" ? process.execPath : command;
 }
